@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #pragma once
 
 #include <memory>
@@ -121,8 +105,8 @@ class SafeEnqueueBlobsOp final : public Operator<Context> {
     auto size = queue->getNumBlobs();
     CAFFE_ENFORCE(
         OutputSize() == size + 1,
-        "Expected " + caffe2::to_string(size + 1) + ", " + " got: " +
-            caffe2::to_string(size));
+        "Expected " + caffe2::to_string(size + 1) + ", " +
+            " got: " + caffe2::to_string(size));
     bool status = queue->blockingWrite(this->Outputs());
     Output(size)->Resize();
     math::Set<bool, Context>(
@@ -167,6 +151,15 @@ class SafeDequeueBlobsOp final : public Operator<Context> {
           out->CopyFrom(in);
         } else {
           auto oldSize = out->size();
+
+          CAFFE_ENFORCE(
+              in.ndim() > 0,
+              "Empty tensor to dequeue at column ",
+              col,
+              " within ",
+              size,
+              " total columns");
+
           out->Extend(in.dims()[0], kTensorGrowthPct, &context_);
           auto* dst =
               (char*)out->raw_mutable_data() + oldSize * in.meta().itemsize();
@@ -211,7 +204,10 @@ class WeightedSampleDequeueBlobsOp final : public Operator<Context> {
   USE_OPERATOR_CONTEXT_FUNCTIONS;
 
   WeightedSampleDequeueBlobsOp(const OperatorDef& operator_def, Workspace* ws)
-      : Operator<Context>(operator_def, ws) {
+      : Operator<Context>(operator_def, ws),
+        table_idx_blob_(
+            OperatorBase::GetSingleArgument<int>("table_idx_blob", -1)) {
+    CAFFE_ENFORCE_LT(table_idx_blob_, OutputSize() - 1);
     vector<float> weights = OperatorBase::GetRepeatedArgument<float>("weights");
     if (weights.empty()) {
       weights.resize(InputSize(), 1.0f);
@@ -228,7 +224,7 @@ class WeightedSampleDequeueBlobsOp final : public Operator<Context> {
     }
     std::partial_sum(cumProbs_.begin(), cumProbs_.end(), cumProbs_.begin());
     // Put last value to be 1.0001 to avoid numerical issues.
-    cumProbs_.back() = 1.0001;
+    cumProbs_.back() = 1.0001f;
 
     LOG(INFO) << "Dequeue weights: " << weights;
     LOG(INFO) << "cumProbs: " << cumProbs_;
@@ -239,14 +235,21 @@ class WeightedSampleDequeueBlobsOp final : public Operator<Context> {
     math::RandUniform<float, Context>(1, 0.0f, 1.0f, &r, &context_);
     auto lb = lower_bound(cumProbs_.begin(), cumProbs_.end(), r);
     CAFFE_ENFORCE(lb != cumProbs_.end(), "Cannot find ", r, " in cumProbs_.");
-
-    auto queue = Operator<Context>::Inputs()[lb - cumProbs_.begin()]
+    const int32_t idx = lb - cumProbs_.begin();
+    auto queue = Operator<Context>::Inputs()[idx]
                      ->template Get<std::shared_ptr<BlobsQueue>>();
 
     CAFFE_ENFORCE(queue);
     auto size = queue->getNumBlobs();
     CAFFE_ENFORCE_EQ(OutputSize(), size + 1);
     bool status = queue->blockingRead(this->Outputs());
+    if (table_idx_blob_ >= 0) {
+      auto* table_idx_blob_out = Output(table_idx_blob_);
+      table_idx_blob_out->Resize(1);
+      int32_t* data = table_idx_blob_out->template mutable_data<int32_t>();
+      data[0] = idx;
+    }
+
     Output(size)->Resize();
     math::Set<bool, Context>(
         1, !status, Output(size)->template mutable_data<bool>(), &context_);
@@ -255,5 +258,6 @@ class WeightedSampleDequeueBlobsOp final : public Operator<Context> {
 
  private:
   vector<float> cumProbs_;
+  int table_idx_blob_;
 };
-}
+} // namespace caffe2

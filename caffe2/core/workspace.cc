@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include "caffe2/core/workspace.h"
 
 #include <algorithm>
@@ -198,7 +182,8 @@ const Blob* Workspace::GetBlob(const string& name) const {
 
 void Workspace::AddBlobMapping(
     const Workspace* parent,
-    const std::unordered_map<string, string>& forwarded_blobs) {
+    const std::unordered_map<string, string>& forwarded_blobs,
+    bool skip_defined_blobs) {
   CAFFE_ENFORCE(parent, "Parent workspace must be specified");
   for (const auto& forwarded : forwarded_blobs) {
     CAFFE_ENFORCE(
@@ -213,6 +198,9 @@ void Workspace::AddBlobMapping(
           forwarded.second,
           "Redefinition of blob " + forwarded.first);
     } else {
+      if (skip_defined_blobs && HasBlob(forwarded.first)) {
+        continue;
+      }
       CAFFE_ENFORCE(
           !HasBlob(forwarded.first), "Redefinition of blob " + forwarded.first);
       // Lazy blob resolution - store the parent workspace and
@@ -316,7 +304,6 @@ bool Workspace::RunPlan(const PlanDef& plan, ShouldContinue shouldContinue) {
   return RunPlanOnWorkspace(this, plan, shouldContinue);
 }
 
-#if CAFFE2_MOBILE
 ThreadPool* Workspace::GetThreadPool() {
   std::lock_guard<std::mutex> guard(thread_pool_creation_mutex_);
   if (!thread_pool_) {
@@ -324,6 +311,5 @@ ThreadPool* Workspace::GetThreadPool() {
   }
   return thread_pool_.get();
 }
-#endif // CAFFE2_MOBILE
 
 } // namespace caffe2

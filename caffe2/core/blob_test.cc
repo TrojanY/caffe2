@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -538,7 +522,20 @@ TEST(TensorTest, Tensor64BitDimension) {
   EXPECT_EQ(tensor.ndim(), 1);
   EXPECT_EQ(tensor.dim(0), large_number);
   EXPECT_EQ(tensor.size(), large_number);
-  EXPECT_TRUE(tensor.mutable_data<char>() != nullptr);
+  try {
+    EXPECT_TRUE(tensor.mutable_data<char>() != nullptr);
+  } catch (const EnforceNotMet& e) {
+    string msg = e.what();
+    size_t found = msg.find("posix_memalign");
+    if (found != string::npos) {
+      msg = msg.substr(0, msg.find('\n'));
+      LOG(WARNING) << msg;
+      LOG(WARNING) << "Out of memory issue with posix_memalign;\n";
+      return;
+    } else {
+      throw e;
+    }
+  }
   EXPECT_EQ(tensor.nbytes(), large_number * sizeof(char));
   EXPECT_EQ(tensor.itemsize(), sizeof(char));
   // Try to go even larger, but this time we will not do mutable_data because we
@@ -1024,5 +1021,22 @@ TEST(QTensor, QTensorSizingTest) {
   EXPECT_EQ(qtensor.nbytes(), 12);
   EXPECT_EQ(qtensor.size(), 30);
 }
+
+TEST(BlobTest, CastingMessage) {
+  Blob b;
+  b.GetMutable<BlobTestFoo>();
+  b.Get<BlobTestFoo>();
+  try {
+    b.Get<BlobTestBar>();
+    FAIL() << "Should have thrown";
+  } catch (const EnforceNotMet& e) {
+    string msg = e.what();
+    msg = msg.substr(0, msg.find('\n'));
+    LOG(INFO) << msg;
+    EXPECT_NE(msg.find("BlobTestFoo"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("BlobTestBar"), std::string::npos) << msg;
+  }
+}
+
 } // namespace
 } // namespace caffe2

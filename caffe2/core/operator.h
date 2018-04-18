@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef CAFFE2_CORE_OPERATOR_H_
 #define CAFFE2_CORE_OPERATOR_H_
 
@@ -21,6 +5,7 @@
 #include <climits>
 #include <cstddef>
 #include <exception>
+#include <set>
 #include <typeinfo>
 #include <vector>
 
@@ -98,6 +83,12 @@ class OperatorBase : public Observable<OperatorBase> {
     return outputs_.at(idx)->template GetMutable<T>();
   }
 
+  template <typename T>
+  inline T* Output(int idx, T* allocated) {
+    outputs_.at(idx)->Reset(allocated);
+    return allocated;
+  }
+
   inline const Blob& InputBlob(int idx) {
     return *inputs_.at(idx);
   }
@@ -116,8 +107,12 @@ class OperatorBase : public Observable<OperatorBase> {
     return outputs_.at(idx)->template IsType<T>();
   }
 
-  inline int InputSize() { return inputs_.size(); }
-  inline int OutputSize() { return outputs_.size(); }
+  inline int InputSize() const {
+    return inputs_.size();
+  }
+  inline int OutputSize() const {
+    return outputs_.size();
+  }
   inline const vector<const Blob*>& Inputs() const { return inputs_; }
   inline const vector<Blob*>& Outputs() { return outputs_; }
   vector<TensorShape> InputTensorShapes();
@@ -259,7 +254,7 @@ class OperatorBase : public Observable<OperatorBase> {
     return true;
   }
 
-  const std::string& type() {
+  const std::string& type() const {
     CAFFE_ENFORCE(operator_def_.get() != nullptr);
     return operator_def_->type();
   }
@@ -407,7 +402,7 @@ class Operator : public OperatorBase {
           event().SetFinished();
         }
       } else {
-        RecordEvent(getErrorMsg().c_str());
+        event().SetFinished(getErrorMsg().c_str());
         this->RecordLastFailedOpNetPosition();
       }
       return result;
@@ -417,11 +412,15 @@ class Operator : public OperatorBase {
             "Error from operator: \n" + ProtoDebugString(debug_def()));
         AddRelatedBlobInfo(&err);
       }
-      RecordEvent(err.what());
+      event().SetFinished(err.what());
+      this->RecordLastFailedOpNetPosition();
+      throw;
+    } catch (const std::exception& err) {
+      event().SetFinished(err.what());
       this->RecordLastFailedOpNetPosition();
       throw;
     } catch (...) {
-      RecordEvent(getErrorMsg().c_str());
+      event().SetFinished(getErrorMsg().c_str());
       this->RecordLastFailedOpNetPosition();
       throw;
     }
@@ -461,6 +460,10 @@ class Operator : public OperatorBase {
     return HasAsyncPart() && context_.SupportsAsyncScheduling();
   }
 
+  const Context* getContext() const {
+    return &context_;
+  }
+
  protected:
   void RecordEvent(const char* err_msg = nullptr) final {
     if (event_) {
@@ -488,11 +491,13 @@ class Operator : public OperatorBase {
   /* using override */ using OperatorBase::InputSize;               \
   /* using override */ using OperatorBase::OutputSize
 
-#define USE_OPERATOR_FUNCTIONS(context)                   \
-  USE_OPERATOR_BASE_FUNCTIONS;                            \
-  /* using override */ using Operator<context>::context_; \
-  /* using override */ using Operator<context>::Input;    \
-  /* using override */ using Operator<context>::Output
+#define USE_OPERATOR_FUNCTIONS(context)                    \
+  USE_OPERATOR_BASE_FUNCTIONS;                             \
+  /* using override */ using Operator<context>::context_;  \
+  /* using override */ using Operator<context>::Input;     \
+  /* using override */ using Operator<context>::InputBlob; \
+  /* using override */ using Operator<context>::Output;    \
+  /* using override */ using Operator<context>::OutputBlob
 
 #define USE_OPERATOR_CONTEXT_FUNCTIONS USE_OPERATOR_FUNCTIONS(Context)
 
@@ -820,6 +825,9 @@ TensorShapes InferBlobShapesAndTypesFromMap(
 std::map<string, std::pair<DeviceOption, DeviceOption>> ValidateTensorDevices(
     OperatorBase& op,
     const OperatorDef& op_def);
+
+// Get a set of registered operator names
+std::set<std::string> GetRegisteredOperators();
 
 }  // namespace caffe2
 

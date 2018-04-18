@@ -1,26 +1,10 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #pragma once
 #include <unordered_map>
 #include <string>
 #include <ATen/ATen.h>
 #include <caffe2/core/context.h>
 #include <caffe2/core/operator.h>
-#include <google/protobuf/text_format.h>
+#include <caffe2/utils/math.h>
 #include <iostream>
 
 // a map from descriptor strings (see [DESCRIPTORS])
@@ -32,14 +16,6 @@ static std::unordered_map<std::string, int> op_to_key = {
 namespace caffe2 {
 
 using at::Half; // for AT_FORALL_SCALAR_TYPES
-
-std::function<void(void*)> deleterFor(at::Tensor t) {
-  // return a closure that holds a handle to t until it is called
-  // to keep the aten memory alive
-  return [t](void * ptr) mutable {
-    t.reset();
-  };
-}
 
 template <class Context>
 class ATenOp : public Operator<Context> {
@@ -109,7 +85,12 @@ private:
     auto at_sizes = src.sizes();
     std::vector<int64_t> dims(at_sizes.begin(),at_sizes.end());
     dst->Resize(dims);
-    dst->ShareExternalPointer(src.data_ptr(), typeMetaFor(src), 0, deleterFor(src));
+    dst->ShareExternalPointer(
+        src.data_ptr(), typeMetaFor(src), 0, [src](void* ptr) mutable {
+          // return a closure that holds a handle to t until it is called
+          // to keep the aten memory alive
+          return src.reset();
+        });
   }
   void assignListStartingAt(
       size_t offset,

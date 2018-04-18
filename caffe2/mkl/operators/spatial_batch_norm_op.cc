@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include "caffe2/operators/spatial_batch_norm_op.h"
 #include <math.h>
 
@@ -66,7 +50,7 @@ class MKLBNOp final : public SpatialBNOp<MKLContext> {
 
     bool dims_changed;
     CHECK_INPUT_DIMS(X, dims_changed);
-    if (dims_changed) {
+    if (dims_changed || FLAGS_caffe2_mkl_memonger_in_use) {
       // Create main primitive.
       if (is_test_) {
         primitive_.Reset(
@@ -111,7 +95,7 @@ class MKLBNOp final : public SpatialBNOp<MKLContext> {
     // Try to share from the output: this allows us to avoid unnecessary copy
     // operations, if the output is already allocated and is having the same
     // layout as the buffer has.
-    buffer_.ShareFrom(*Y);
+    bool shared = buffer_.ShareFrom(*Y);
     resources_[dnnResourceSrc] = X.buffer();
     resources_[dnnResourceDst] = buffer_.buffer();
     resources_[dnnResourceScaleShift] = scale_bias_buffer_->buffer();
@@ -143,6 +127,9 @@ class MKLBNOp final : public SpatialBNOp<MKLContext> {
       }
     }
     buffer_.CopyTo(Y, primitive_, dnnResourceDst);
+    if (FLAGS_caffe2_mkl_memonger_in_use && !shared) {
+      buffer_.Reset();
+    }
     return true;
   }
 

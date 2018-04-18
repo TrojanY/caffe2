@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef CAFFE2_CORE_COMMON_H_
 #define CAFFE2_CORE_COMMON_H_
 
@@ -123,6 +107,18 @@ private:                                                                       \
 #endif
 #endif
 
+// Defines CAFFE2_EXPORT and CAFFE2_IMPORT. On Windows, this corresponds to
+// different declarations (dllexport and dllimport). On Linux/Mac, it just
+// resolves to the same "default visibility" setting.
+#if defined(_MSC_VER)
+#if defined(CAFFE2_BUILD_SHARED_LIBS)
+#define CAFFE2_EXPORT __declspec(dllexport)
+#define CAFFE2_IMPORT __declspec(dllimport)
+#else
+#define CAFFE2_EXPORT
+#define CAFFE2_IMPORT
+#endif
+#else
 #if defined(__GNUC__)
 #if __GNUC_PREREQ(4, 9)
 #define CAFFE2_EXPORT [[gnu::visibility("default")]]
@@ -131,6 +127,23 @@ private:                                                                       \
 #endif
 #else
 #define CAFFE2_EXPORT
+#endif
+#define CAFFE2_IMPORT CAFFE2_EXPORT
+#endif
+
+// CAFFE2_API is a macro that, depends on whether you are building the
+// main caffe2 library or not, resolves to either CAFFE2_EXPORT or
+// CAFFE2_IMPORT.
+//
+// This is used in e.g. Caffe2's protobuf files: when building the main library,
+// it is defined as CAFFE2_EXPORT to fix a Windows global-variable-in-dll
+// issue, and for anyone dependent on Caffe2 it will be defined as
+// CAFFE2_IMPORT.
+
+#ifdef CAFFE2_BUILD_MAIN_LIB
+#define CAFFE2_API CAFFE2_EXPORT
+#else
+#define CAFFE2_API CAFFE2_IMPORT
 #endif
 
 // make_unique is a C++14 feature. If we don't have 14, we will emulate
@@ -190,7 +203,7 @@ inline double stod(const string& str, std::size_t* pos = 0) {
   double val = 0;
   ss >> val;
   if (pos) {
-    if (ss.tellg() == -1) {
+    if (ss.tellg() == std::streampos(-1)) {
       *pos = str.size();
     } else {
       *pos = ss.tellg();
@@ -244,19 +257,17 @@ class SkipIndices<> {
   }
 };
 
-// A global variable to mark if Caffe2 has cuda linked to the current runtime.
-// Do not directly use this variable, but instead use the HasCudaRuntime()
-// function below.
-extern bool g_caffe2_has_cuda_linked;
-
 // HasCudaRuntime() tells the program whether the binary has Cuda runtime
 // linked. This function should not be used in static initialization functions
 // as the underlying boolean variable is going to be switched on when one
 // loads libcaffe2_gpu.so.
-inline bool HasCudaRuntime() {
-  return g_caffe2_has_cuda_linked;
+bool HasCudaRuntime();
+namespace internal {
+// Sets the Cuda Runtime flag that is used by HasCudaRuntime(). You should
+// never use this function - it is only used by the Caffe2 gpu code to notify
+// Caffe2 core that cuda runtime has been loaded.
+void SetCudaRuntimeFlag();
 }
-
 // Returns which setting Caffe2 was configured and built with (exported from
 // CMake)
 const std::map<string, string>& GetBuildOptions();

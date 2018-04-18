@@ -1,18 +1,3 @@
-# Copyright (c) 2016-present, Facebook, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-##############################################################################
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -167,6 +152,28 @@ class TestFillerOperator(hu.HypothesisTestCase):
 
         # Check against numpy reference
         self.assertReferenceChecks(gc, op, [shape, value], _fill_diagonal)
+
+    @given(lengths=st.lists(st.integers(min_value=0, max_value=10),
+                            min_size=0,
+                            max_size=10),
+           **hu.gcs)
+    def test_lengths_range_fill(self, lengths, gc, dc):
+        op = core.CreateOperator(
+            "LengthsRangeFill",
+            ["lengths"],
+            ["increasing_seq"])
+
+        def _len_range_fill(lengths):
+            sids = []
+            for _, l in enumerate(lengths):
+                sids.extend(list(range(l)))
+            return (np.array(sids, dtype=np.int32), )
+
+        self.assertReferenceChecks(
+            device_option=gc,
+            op=op,
+            inputs=[np.array(lengths, dtype=np.int32)],
+            reference=_len_range_fill)
 
     @given(**hu.gcs)
     def test_gaussian_fill_op(self, gc, dc):

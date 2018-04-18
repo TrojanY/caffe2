@@ -1,18 +1,3 @@
-# Copyright (c) 2016-present, Facebook, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-##############################################################################
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -200,10 +185,11 @@ class TestSequenceOps(hu.HypothesisTestCase):
             inputs=[data, lengths],
             reference=partial(_remove_padding_ref, start_pad_width, end_pad_width))
 
-    @given(start_pad_width=st.integers(min_value=1, max_value=2),
+    @given(start_pad_width=st.integers(min_value=0, max_value=2),
            end_pad_width=st.integers(min_value=0, max_value=2),
-           args=_gen_test_add_padding(with_pad_data=True))
-    def test_gather_padding(self, start_pad_width, end_pad_width, args):
+           args=_gen_test_add_padding(with_pad_data=True),
+           **hu.gcs)
+    def test_gather_padding(self, start_pad_width, end_pad_width, args, gc, dc):
         lengths, data, start_padding, end_padding = args
         padded_data, padded_lengths = _add_padding_ref(
             start_pad_width, end_pad_width, True, data,
@@ -215,10 +201,10 @@ class TestSequenceOps(hu.HypothesisTestCase):
             padding_width=start_pad_width,
             end_padding_width=end_pad_width)
         self.assertReferenceChecks(
-            hu.cpu_do,
-            op,
-            [padded_data, padded_lengths],
-            partial(_gather_padding_ref, start_pad_width, end_pad_width))
+            device_option=gc,
+            op=op,
+            inputs=[padded_data, padded_lengths],
+            reference=partial(_gather_padding_ref, start_pad_width, end_pad_width))
 
     @given(data=hu.tensor(min_dim=3, max_dim=3, dtype=np.float32,
                           elements=st.floats(min_value=-np.inf,
@@ -320,6 +306,7 @@ class TestSequenceOps(hu.HypothesisTestCase):
             op=op,
             inputs=[data],
             reference=op_ref)
+
 
 if __name__ == "__main__":
     import unittest

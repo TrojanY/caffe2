@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include "caffe2/core/common.h"
 #include "caffe2/core/context.h"
 
@@ -21,9 +5,10 @@
 
 #include "caffe2/core/operator.h"
 #include "caffe2/core/timer.h"
-#include "caffe2/mobile/fb/aloha/headers.h"
 #include "caffe2/operators/conv_pool_op_base.h"
 #include "caffe2/operators/conv_transpose_unpool_op_base.h"
+#include "caffe2/operators/generate_proposals_op.h"
+#include "caffe2/operators/generate_proposals_op_util_boxes.h"
 #include "caffe2/operators/spatial_batch_norm_op.h"
 
 #include "mpscnn.h"
@@ -39,13 +24,13 @@
        options:NSNumericSearch] != NSOrderedAscending)
 
 // Only compiles against Base SDK iOS 11.0 or greater
-@interface ConvTransposeDataSource : NSObject<MPSCNNConvolutionDataSource>
+@interface ConvDataSource : NSObject<MPSCNNConvolutionDataSource>
 @property float* weights_;
 @property float* bias_;
 @property MPSCNNConvolutionDescriptor* desc_;
 @end
 
-@implementation ConvTransposeDataSource
+@implementation ConvDataSource
 - (id)initWithWeight:(float*)weights
                 bias:(float*)bias
                 desc:(MPSCNNConvolutionDescriptor*)desc {
@@ -788,22 +773,57 @@ class MPSCNNConvOp final : public ConvPoolOpBase<CPUContext> {
           }
         }
       }
-      MPSCNNConvolutionDescriptor* desc = [MPSCNNConvolutionDescriptor
-          cnnConvolutionDescriptorWithKernelWidth:kW
-                                     kernelHeight:kH
-                             inputFeatureChannels:C
-                            outputFeatureChannels:M
-                                     neuronFilter:Neuron::t()];
-      desc.strideInPixelsX = stride_w();
-      desc.strideInPixelsY = stride_h();
-      desc.groups = this->group_;
+      // DepthwiseConv path
+      bool runtimeAtLeastIOS11 =
+          SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"11.0");
+      // Only inputFeatureChannels == outputFeatureChannels is supported right
+      // now
+      if (runtimeAtLeastIOS11 && this->group_ > 1 && Cf == 1 &&
+          M == this->group_) {
+        MPSCNNDepthWiseConvolutionDescriptor* desc =
+            [MPSCNNDepthWiseConvolutionDescriptor
+                cnnConvolutionDescriptorWithKernelWidth:kW
+                                           kernelHeight:kH
+                                   inputFeatureChannels:C
+                                  outputFeatureChannels:M
+                                           neuronFilter:Neuron::t()];
+        desc.strideInPixelsX = stride_w();
+        desc.strideInPixelsY = stride_h();
+        desc.groups = 1;
+        auto data_source = [[ConvDataSource alloc]
+            initWithWeight:refilter.data()
+                      bias:const_cast<float*>(bias.template data<float>())
+                      desc:desc];
+        conv_ =
+            [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
+                                              weights:data_source];
+      } else {
+        if (this->group_ > 1) {
+          CAFFE_ENFORCE_EQ(
+              Cf % 4,
+              0,
+              "MPSCNNConvolution requires number of input \
+                           channels in each group to be multiple of 4 for \
+                           group > 1.");
+        }
+        MPSCNNConvolutionDescriptor* desc = [MPSCNNConvolutionDescriptor
+            cnnConvolutionDescriptorWithKernelWidth:kW
+                                       kernelHeight:kH
+                               inputFeatureChannels:C
+                              outputFeatureChannels:M
+                                       neuronFilter:Neuron::t()];
+        desc.strideInPixelsX = stride_w();
+        desc.strideInPixelsY = stride_h();
+        desc.groups = this->group_;
+        auto data_source = [[ConvDataSource alloc]
+            initWithWeight:refilter.data()
+                      bias:const_cast<float*>(bias.template data<float>())
+                      desc:desc];
+        conv_ =
+            [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
+                                              weights:data_source];
+      }
 
-      conv_ =
-          [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
-                              convolutionDescriptor:desc
-                                      kernelWeights:refilter.data()
-                                          biasTerms:bias.template data<float>()
-                                              flags:MPSCNNConvolutionFlagsNone];
       [conv_ setEdgeMode:MPSImageEdgeModeZero];
 
       MPSOffset offset;
@@ -816,7 +836,7 @@ class MPSCNNConvOp final : public ConvPoolOpBase<CPUContext> {
 
     CAFFE_ENFORCE_EQ(conv_.strideInPixelsY, stride_h());
     CAFFE_ENFORCE_EQ(conv_.strideInPixelsX, stride_w());
-    CAFFE_ENFORCE_EQ(conv_.inputFeatureChannels, Cf * conv_.groups);
+    CAFFE_ENFORCE_EQ(conv_.inputFeatureChannels, Cf * this->group_);
     CAFFE_ENFORCE_EQ(M % conv_.groups, 0);
     CAFFE_ENFORCE_EQ(conv_.outputFeatureChannels, M);
     CAFFE_ENFORCE_EQ(conv_.kernelWidth, kW);
@@ -1347,12 +1367,12 @@ class MPSCNNFullyConnectedOp final : public Operator<CPUContext> {
                              inputFeatureChannels:input_channels
                             outputFeatureChannels:output_channels
                                      neuronFilter:Neuron::t()];
-      fc_ =
-          [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
-                              convolutionDescriptor:desc
-                                      kernelWeights:refilter.data()
-                                          biasTerms:b.template data<float>()
-                                              flags:MPSCNNConvolutionFlagsNone];
+      auto data_source = [[ConvDataSource alloc]
+          initWithWeight:refilter.data()
+                    bias:const_cast<float*>(b.template data<float>())
+                    desc:desc];
+      fc_ = [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
+                                              weights:data_source];
     }
     // Note that X.numberOfImages can change between calls, but X.height and
     // X.width are static by definition.
@@ -1503,14 +1523,14 @@ class MPSCNNConvTransposeOp final : public ConvTransposeUnpoolBase<CPUContext> {
         desc.strideInPixelsX = this->stride_w();
         desc.strideInPixelsY = this->stride_h();
         desc.groups = 1;
-        auto data_source_ = [[ConvTransposeDataSource alloc]
+        auto data_source = [[ConvDataSource alloc]
             initWithWeight:refilter.data()
                       bias:const_cast<float*>(bias.data<float>())
                       desc:desc];
 
         conv_trans_ = [[MPSCNNConvolutionTranspose alloc]
             initWithDevice:getMPSCNNContext().device
-                   weights:data_source_];
+                   weights:data_source];
         MPSOffset offset;
         offset.x = 0;
         offset.y = 0;
@@ -1534,12 +1554,13 @@ class MPSCNNConvTransposeOp final : public ConvTransposeUnpoolBase<CPUContext> {
 
         desc.strideInPixelsX = 1;
         desc.strideInPixelsY = 1;
-        conv_ = [[MPSCNNConvolution alloc]
-                   initWithDevice:getMPSCNNContext().device
-            convolutionDescriptor:desc
-                    kernelWeights:refilter.data()
-                        biasTerms:fakeBias.data() /* TODO: fix */
-                            flags:MPSCNNConvolutionFlagsNone];
+        auto data_source =
+            [[ConvDataSource alloc] initWithWeight:refilter.data()
+                                              bias:fakeBias.data()
+                                              desc:desc];
+        conv_ =
+            [[MPSCNNConvolution alloc] initWithDevice:getMPSCNNContext().device
+                                              weights:data_source];
         [conv_ setEdgeMode:MPSImageEdgeModeZero];
         MPSOffset offset;
         offset.x = 0;

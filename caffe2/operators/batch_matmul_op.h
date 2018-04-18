@@ -1,18 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 #ifndef CAFFE2_OPERATORS_MATMUL_OP_H_
 #define CAFFE2_OPERATORS_MATMUL_OP_H_
 
@@ -198,13 +183,14 @@ class BatchMatMulOp final : public Operator<Context> {
       }
       if (!A_broadcasted) {
         new_dims.push_back(M);
+      } else {
+        new_dims.push_back(1);
       }
       if (!B_broadcasted) {
         new_dims.push_back(N);
+      } else {
+        new_dims.push_back(1);
       }
-      // Allocate output tensor
-      Y->Resize(new_dims);
-      auto* Y_data = Y->template mutable_data<T>();
 
       // Calculate strides. Continuing our example above,
       //   [4, M, K] * [2, 3, 4, K, N] = [2, 3, 4, M, N]
@@ -218,9 +204,6 @@ class BatchMatMulOp final : public Operator<Context> {
       size_t A_stride = 1; // How far to increment A pointer each itr
       size_t B_stride = 1; // How far to increment B pointer each itr
       size_t Y_stride = 1; // How far to increment Y pointer each itr
-      // How large the slices of A and B we are operating on at each iteration
-      // are.
-      size_t A_slice_size, B_slice_size;
       // How many "inner batches" we have. That is, the product of sizes for
       // the slices excluding M, K, and N, for their respective matrices.
       size_t num_sub_batches = 1;
@@ -234,12 +217,9 @@ class BatchMatMulOp final : public Operator<Context> {
             num_sub_batches *= *(first_r_itr + i);
           }
         }
-        A_slice_size = A_stride;
         B_stride = 0;
-        B_slice_size = B.size();
       } else {
         A_stride = 0;
-        A_slice_size = A.size();
         auto second_r_itr = dims_B.rbegin();
         auto output_r_itr = new_dims.rbegin();
         for (size_t i = 0; i < num_inner_dims; ++i) {
@@ -249,12 +229,6 @@ class BatchMatMulOp final : public Operator<Context> {
             num_sub_batches *= *(second_r_itr + i);
           }
         }
-        B_slice_size = B_stride;
-      }
-
-      // Zero batch dimension indicates no elements
-      if (num_sub_batches == 0) {
-        return true;
       }
 
       size_t num_outer_batches = 1;
@@ -262,14 +236,28 @@ class BatchMatMulOp final : public Operator<Context> {
         num_outer_batches *= new_dims[i];
       }
 
+      // Mutually exclusive since otherwise we would've taken the vector-vector
+      // path above
+      if (A_broadcasted) {
+        new_dims.erase(new_dims.end() - 2);
+      } else if (B_broadcasted) {
+        new_dims.erase(new_dims.end() - 1);
+      }
+
+      // Allocate output tensor
+      Y->Resize(new_dims);
+      auto* Y_data = Y->template mutable_data<T>();
+
+      // Zero batch dimension indicates no elements
+      if (num_sub_batches == 0 || num_outer_batches == 0) {
+        return true;
+      }
+
       // TODO(T23893772): doing this in a loop is likely going to be slow on GPU
       for (size_t p = 0; p < num_outer_batches; ++p) {
         math::GemmBatched<T, Context, Engine>(
             trans_a_ ? CblasTrans : CblasNoTrans,
             trans_b_ ? CblasTrans : CblasNoTrans,
-            A_slice_size,
-            num_sub_batches,
-            B_slice_size,
             num_sub_batches,
             M,
             N,

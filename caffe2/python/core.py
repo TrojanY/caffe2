@@ -1,18 +1,3 @@
-# Copyright (c) 2016-present, Facebook, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-##############################################################################
-
 ## @package core
 # Module caffe2.python.core
 from __future__ import absolute_import
@@ -28,12 +13,15 @@ from six import binary_type, string_types, text_type
 
 from caffe2.proto import caffe2_pb2
 from caffe2.python import scope, utils, workspace
-from caffe2.python.control_ops_grad import gen_do_gradient, gen_if_gradient
+from caffe2.python.control_ops_grad import \
+    gen_do_gradient, gen_if_gradient, gen_while_gradient
 
 import caffe2.python._import_c_extension as C
 import pickle
 import numpy as np
 import sys
+import traceback
+import os
 
 # Mac os specific message
 if (sys.platform == 'darwin' and 'leveldb' in C.registered_dbs()):
@@ -145,6 +133,13 @@ def InferOpBlobDevices(op):
         device_option.ParseFromString(dev_str)
         output_info.append(device_option)
     return input_info, output_info
+
+
+def InferOpDeviceAsBlobDevices(op):
+    op_dev = op.device_option if op.device_option else caffe2_pb2.DeviceOption()
+    input_dev = [op_dev] * len(op.input)
+    output_dev = [op_dev] * len(op.output)
+    return input_dev, output_dev
 
 
 GradientSlice = namedtuple('GradientSlice', ['indices', 'values'])
@@ -320,6 +315,10 @@ def CreateOperator(
     registered with Caffe2.
     """
     operator = caffe2_pb2.OperatorDef()
+    if (os.environ.get('CAFFE2_DEBUG')):
+        stack = traceback.format_stack()
+        operator.debug_info = "".join(stack[:-1])
+
     operator.type = operator_type
     operator.name = name
     # Add rectified inputs and outputs
@@ -1110,6 +1109,7 @@ class GradientRegistry(object):
 
 GradientRegistry.RegisterGradient('Do')(gen_do_gradient)
 GradientRegistry.RegisterGradient('If')(gen_if_gradient)
+GradientRegistry.RegisterGradient('While')(gen_while_gradient)
 
 
 def get_ssa(net, blob_versions=None):
@@ -2179,6 +2179,21 @@ def device_equal(src, dst):
     return src.device_type == dst.device_type and src.cuda_gpu_id == dst.cuda_gpu_id
 
 
+def update_placeholder_op_output(op, blob_to_device):
+    '''
+    Placeholder ops (for e.g. Recv) always runs on CPU. So ensure their
+    output blobs reside on CPU.
+    '''
+    outputs = []
+    for output in op.output:
+        blob_dev = blob_to_device[output]
+        if blob_dev.device_type != caffe2_pb2.CPU:
+            output += '_cpu'
+        outputs.append(output)
+    del op.output[:]
+    op.output.extend(outputs)
+
+
 class RemapEntry:
     def __init__(self, blob, device):
         self.blob = blob
@@ -2191,7 +2206,8 @@ class RemapEntry:
         return hash(self.blob + str(self.device))
 
 
-def InjectCrossDeviceCopies(net, blob_to_device=None, blob_remap=None):
+def InjectCrossDeviceCopies(net, blob_to_device=None, blob_remap=None,
+                            placeHolderOps=None):
     '''
     Injecting Copy functions between device within a net. Users can provide
     a net with part of operators using different device_options. This method
@@ -2234,8 +2250,14 @@ def InjectCrossDeviceCopies(net, blob_to_device=None, blob_remap=None):
 
     for op in net._net.op:
         temp_remap.clear()
-        # Get where inputs and outputs should be
-        input_dev, output_dev = InferOpBlobDevices(op)
+        # Get where inputs and outputs should be. If it is a Placeholder
+        # (i.e. fake) op, then set op's device as blob's devices.
+        input_dev = None
+        output_dev = None
+        if placeHolderOps is not None and op.type in placeHolderOps:
+            input_dev, output_dev = InferOpDeviceAsBlobDevices(op)
+        else:
+            input_dev, output_dev = InferOpBlobDevices(op)
 
         for dev, input in zip(input_dev, op.input):
             assert net.BlobIsDefined(input), \
@@ -2280,19 +2302,22 @@ def InjectCrossDeviceCopies(net, blob_to_device=None, blob_remap=None):
                     temp_remap[input] = new_name
                     blob_to_device[new_name] = dev
 
+        if placeHolderOps is not None and op.type in placeHolderOps:
+            update_placeholder_op_output(op, blob_to_device)
+
         # Enforcing no reuse blob between operators. In-place blob usage in an
         # op is allowed. This is based on the assumption that in-place op has
         # same device info
-        for out_blob, device in zip(op.output, output_dev):
-            if out_blob in blob_to_device and (
-                out_blob not in op.input and
-                not device_equal(blob_to_device[out_blob], device)
+        for dev, output in zip(output_dev, op.output):
+            if output in blob_to_device and (
+                output not in op.input and
+                not device_equal(blob_to_device[output], dev)
             ):
                 raise RuntimeError(
                     "In-place blob: {} is not supported between operators "
                     "with different device option previous:{} now: {}. "
                     "Failed op:\n {}".format(
-                        out_blob, blob_to_device[out_blob], device, op
+                        output, blob_to_device[output], dev, op
                     )
                 )
         new_op = caffe2_pb2.OperatorDef()
@@ -2775,18 +2800,18 @@ def _extract_stacktrace():
     The reason for file system access avoidance is that
     if code is located on an NFS, file access might be slow
 
-    Function returns a list of tuples (file_name, line_number)
+    Function returns a list of tuples (file_name, line_number, function)
     '''
 
-    current_file_name = __name__.replace('.', '/') + ".py"
     result = []
-    frame = sys._getframe(1)
+    # Ignore top 3 layers of stack: this function, _CreateAndAddToSelf, and
+    # whatever calls _CreateAndAddToSelf (either __getattr__ or Python)
+    frame = sys._getframe(3)
     # We just go down the frame stack in a loop
     while frame:
-        if current_file_name not in frame.f_code.co_filename:
-            # Its important to extract information from the frame here
-            # as frame's current line most probably will change later.
-            result.append((frame.f_code.co_filename, frame.f_lineno))
+        # Its important to extract information from the frame here
+        # as frame's current line most probably will change later.
+        result.append((frame.f_code.co_filename, frame.f_lineno, frame.f_code.co_name))
         frame = frame.f_back
     return result
 

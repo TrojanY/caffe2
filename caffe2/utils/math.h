@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef CAFFE2_UTILS_MATH_H_
 #define CAFFE2_UTILS_MATH_H_
 // This is a simple translation from the old Caffe math interfaces. We aim to
@@ -198,6 +182,19 @@ void Maximum(
     T* y,
     Context* context);
 
+// Transpose tensor X with x_dims by axes and write the result to tensor Y with
+// y_dims.
+template <typename T, class Context>
+void Transpose(
+    const int num_axes,
+    const int* x_dims,
+    const int* y_dims,
+    const int* axes,
+    const int data_size,
+    const T* X,
+    T* Y,
+    Context* context);
+
 // Decaf gemm provides a simpler interface to the gemm functions, with the
 // limitation that the data has to be contiguous in memory.
 template <typename T, class Context, class Engine = DefaultEngine>
@@ -239,10 +236,7 @@ template <typename T, class Context, class Engine = DefaultEngine>
 void GemmBatched(
     const CBLAS_TRANSPOSE TransA,
     const CBLAS_TRANSPOSE TransB,
-    const int A_size,
-    const int A_batches,
-    const int B_size,
-    const int B_batches,
+    const int batch_size,
     const int M,
     const int N,
     const int K,
@@ -467,19 +461,6 @@ template <typename T>
 constexpr T roundUp(T a, T b) {
   return divUp<T>(a, b) * b;
 }
-
-// Returns true if the given integer type is a power-of-2 (positive only)
-// Note(jiayq): windows reported an error per
-//     https://github.com/caffe2/caffe2/issues/997
-// and as a result will make it a macro.
-#ifdef _MSC_VER
-#define integerIsPowerOf2(v) ((v) && !((v) & ((v) - 1)))
-#else // _MSC_VER
-template <typename T>
-constexpr bool integerIsPowerOf2(T v) {
-  return (v && !(v & (v - 1)));
-}
-#endif // _MSC_VER
 
 // Returns log2(n) for a positive integer type
 template <typename T>

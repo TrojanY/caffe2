@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef CAFFE2_SGD_LEARNING_RATE_FUNCTORS_H_
 #define CAFFE2_SGD_LEARNING_RATE_FUNCTORS_H_
 
@@ -38,6 +22,33 @@ class FixedLearningRate : public LearningRateFunctor<T> {
   T operator()(const int64_t /*iter*/) const override {
     return 1.;
   }
+};
+
+// Alter: alternatate learning rate with active_period and inactive_period.
+// update for for a duration of active_period and then stop for a duration of
+// inactive_period if active_first, and vice versa
+template <typename T>
+class AlternateLearningRate : public LearningRateFunctor<T> {
+ public:
+  AlternateLearningRate(
+      const int64_t active_period,
+      const int64_t inactive_period,
+      const bool active_first)
+      : active_period_(active_period),
+        inactive_period_(inactive_period),
+        active_first_(active_first) {}
+  T operator()(const int64_t iter) const override {
+    if (iter % (active_period_ + inactive_period_) <
+        (active_first_ ? active_period_ : inactive_period_)) {
+      return active_first_ ? 1. : 0.;
+    } else {
+      return active_first_ ? 0. : 1.;
+    };
+  };
+
+  int64_t active_period_;
+  int64_t inactive_period_;
+  bool active_first_;
 };
 
 // Step: return gamma ^ (floor(iter / step))
@@ -122,6 +133,36 @@ class ConstantWarmupLearningRate : public LearningRateFunctor<T> {
   }
   T multiplier_;
   uint64_t num_iter_;
+};
+
+// hill: the learning rate changes according to following 3 stages
+// 1) linear warmup (increasing) at first num_iter steps from start_multiplier
+// 2) inverse shrink (decreasing) afterwards (gamma, power)
+// 3) lower bounded by end_multiplier
+template <typename T>
+class HillLearningRate : public LearningRateFunctor<T> {
+ public:
+  HillLearningRate(
+      const int64_t num_iter,
+      const T start_multiplier,
+      const T gamma,
+      const T power,
+      const T end_multiplier)
+      : linear_warmup_lr_(start_multiplier, num_iter),
+        inv_lr_(gamma, power),
+        num_iter_(num_iter),
+        end_multiplier_(end_multiplier) {}
+  T operator()(const int64_t iter) const override {
+    if (iter < num_iter_) {
+      return linear_warmup_lr_(iter);
+    } else {
+      return std::max(end_multiplier_, inv_lr_(iter - num_iter_));
+    }
+  }
+  LinearWarmupLearningRate<T> linear_warmup_lr_;
+  InvLearningRate<T> inv_lr_;
+  int64_t num_iter_;
+  T end_multiplier_;
 };
 
 } // namespace caffe2

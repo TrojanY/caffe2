@@ -1,19 +1,3 @@
-/**
- * Copyright (c) 2016-present, Facebook, Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef CAFFE2_CORE_NET_ASYNC_BASE_H_
 #define CAFFE2_CORE_NET_ASYNC_BASE_H_
 
@@ -57,7 +41,7 @@ class AsyncNetBase : public NetBase {
       int task_id,
       int stream_id,
       const std::vector<int>& wait_task_ids) const;
-  bool run(int task_id, int stream_id);
+  void run(int task_id, int stream_id);
   int stream(int task_id);
   std::shared_ptr<TaskThreadPool> pool(const DeviceOption& device_option);
 
@@ -74,12 +58,18 @@ class AsyncNetBase : public NetBase {
 
   // Pools and streams
   std::mutex pools_mutex_;
-  std::vector<std::shared_ptr<TaskThreadPool>> gpu_pools_;
   std::shared_ptr<TaskThreadPool> cpu_pool_;
-  std::shared_ptr<TaskThreadPool> gpu_pool_;
+  std::vector<std::shared_ptr<TaskThreadPool>> cpu_pools_;
+  std::vector<std::shared_ptr<TaskThreadPool>> gpu_pools_;
   static thread_local std::vector<int> stream_counters_;
 
   DISABLE_COPY_AND_ASSIGN(AsyncNetBase);
+
+ private:
+  std::shared_ptr<TaskThreadPool> pool_getter(
+      std::vector<std::shared_ptr<TaskThreadPool>>& pools,
+      int pool_idx,
+      const DeviceOption& device_option);
 };
 
 CAFFE_DECLARE_SHARED_REGISTRY(
@@ -87,7 +77,7 @@ CAFFE_DECLARE_SHARED_REGISTRY(
     TaskThreadPool,
     const DeviceOption&);
 
-std::shared_ptr<TaskThreadPool> GetAsyncNetCPUThreadPool();
+std::shared_ptr<TaskThreadPool> GetAsyncNetCPUThreadPool(int numa_node_id);
 
 } // namespace caffe2
 
